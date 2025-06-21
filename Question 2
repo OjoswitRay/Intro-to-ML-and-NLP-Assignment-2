@@ -1,0 +1,77 @@
+import pandas as pd
+import numpy as np
+import re
+import string
+import nltk
+import gensim.downloader as api
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords, wordnet
+from nltk.stem import WordNetLemmatizer
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+import contractions
+import emoji
+
+# Download required NLTK resources
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+nltk.download('omw-1.4')
+
+# Load dataset (assumes CSV with 'airline_sentiment' and 'text' columns)
+df = pd.read_csv('Tweets.csv')[['airline_sentiment', 'text']]
+
+# Preprocessing functions
+stop_words = set(stopwords.words('english'))
+lemmatizer = WordNetLemmatizer()
+
+def clean_tweet(text):
+    text = text.lower()
+    text = contractions.fix(text)
+    text = re.sub(r"http\S+|www\S+|https\S+", '', text, flags=re.MULTILINE)
+    text = re.sub(r'@\w+|#\w+', '', text)
+    text = emoji.replace_emoji(text, replace='')  # Remove emojis
+    text = re.sub(f"[{re.escape(string.punctuation)}]", "", text)
+    tokens = word_tokenize(text)
+    tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stop_words and word.isalpha()]
+    return tokens
+
+df['tokens'] = df['text'].apply(clean_tweet)
+
+# Load Google News Word2Vec model (~1.5GB, may take time)
+print("Loading Word2Vec model...")
+w2v_model = api.load("word2vec-google-news-300")
+
+# Vectorize tweets
+def get_vector(tokens):
+    vectors = [w2v_model[word] for word in tokens if word in w2v_model]
+    return np.mean(vectors, axis=0) if vectors else np.zeros(300)
+
+df['vector'] = df['tokens'].apply(get_vector)
+
+# Prepare data
+X = np.vstack(df['vector'].values)
+y = df['airline_sentiment']
+
+# Train/test split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Train classifier
+clf = LogisticRegression(max_iter=1000)
+clf.fit(X_train, y_train)
+
+# Evaluate
+y_pred = clf.predict(X_test)
+print("Test Accuracy:", accuracy_score(y_test, y_pred))
+
+# Prediction function
+def predict_tweet_sentiment(model, w2v_model, tweet):
+    tokens = clean_tweet(tweet)
+    vector = get_vector(tokens)
+    prediction = model.predict([vector])[0]
+    return prediction
+
+# Example
+sample_tweet = "The flight was delayed and the service was terrible. Never flying again!"
+print("Prediction for sample tweet:", predict_tweet_sentiment(clf, w2v_model, sample_tweet))
